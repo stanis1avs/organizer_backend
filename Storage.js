@@ -1,127 +1,166 @@
-const uuid = require('uuid');
-const path = require('path');
-const fs = require('fs');
+const uuid = require("uuid");
+const path = require("path");
+const fs = require("fs").promises;
+const cassandra = require("cassandra-driver");
+
+const client = new cassandra.Client({
+  contactPoints: ["127.0.0.1"],
+  localDataCenter: "datacenter1",
+  keyspace: "chat_app",
+});
 
 module.exports = class Storage {
-  constructor(dB, filesDir, categorydB, favoritesdB, ws, clients) {
+  constructor(ws, clients, filesDir) {
     this.ws = ws;
     this.clients = clients;
-    this.dB = dB;
-    this.category = categorydB;
-    this.favorites = favoritesdB;
     this.filesDir = filesDir;
-    this.allowedTypes = ['image', 'video', 'audio'];
   }
 
   init() {
-    this.ws.on('message', (message) => {
+    this.ws.on("message", async (message) => {
       const command = JSON.parse(message);
 
       //Запрос на данные из БД
-      if (command.event === 'load') {
-        this.eventLoad(command.message);
+      if (command.event === "load") {
+        await this.eventLoad();
       }
 
       // Новое сообщение
-      if (command.event === 'showMessage') {
-        this.eventMessage(command.message);
+      if (command.event === "showMessage") {
+        await this.eventMessage(command.message);
       }
 
       // Удалить сообщение
-      if (command.event === 'deleteMessage') {
-        this.eventDelete(command.message.id);
+      if (command.event === "deleteMessage") {
+        await this.eventDelete(command.message.id);
       }
 
       // Добавить в избранное
-      if (command.event === 'favoriteAppend') {
-        this.eventFavoriteAppend(command.message);
+      if (command.event === "favoriteAppend") {
+        await this.eventFavoriteAppend(command.message);
       }
 
       // Удалить из избранного
-      if (command.event === 'favoriteDelete') {
-        this.eventFavoriteDelete(command.message);
+      if (command.event === "favoriteDelete") {
+        await this.eventFavoriteDelete(command.message);
       }
 
       // Закрепить сообщение
-      if (command.event === 'appendPin') {
-        this.eventPin(command.message.id);
+      if (command.event === "appendPin") {
+        await this.eventPin(command.message.id);
       }
     });
   }
 
   // Запрос на данные из БД
-  eventLoad(position) {
-    // Для "ленивой" подгрузки
-    const startPosition = position || this.dB.length;
-    const itemCounter = startPosition > 10 ? 10 : startPosition;
-    const returnDB = [];
-    for (let i = 0; i < itemCounter; i += 1) {
-      returnDB.push(this.dB[i]);
-    }
+  async eventLoad() {
+    const result = await client.execute("SELECT * FROM messages LIMIT 20");
+    const favorites = await client.execute("SELECT * FROM favorites");
+    const pinned = await client.execute(
+      "SELECT id FROM pinned_message WHERE singleton = ?",
+      ["pinned"],
+      { prepare: true }
+    );
 
     const data = {
-      event: 'load',
-      dB: returnDB,
-      favorites: [...this.favorites],
-      position: startPosition - 10,
+      event: "load",
+      dB: result.rows,
+      favorites: favorites.rows.map((row) => row.id.toString()),
+      pinned: pinned.rowLength > 0 ? pinned.rows[0].id.toString() : null,
+      position: 0,
     };
     this.wsSend(data);
   }
 
   // Новое сообщение
-  eventMessage(message) {
+  async eventMessage(message) {
+    const id = cassandra.types.Uuid.random();
+    const query = `INSERT INTO messages (id, message, date, geo, type)
+                   VALUES (?, ?, ?, ?, ?)`;
+
+    await client.execute(
+      query,
+      [id, message.body, message.date, message.geo, message.type],
+      { prepare: true }
+    );
+
     const data = {
-      id: uuid.v1(),
+      id: id.toString(),
       message: message.body,
       date: message.date,
       type: message.type,
       geo: message.geo,
+      event: "showMessage",
     };
-    this.dB.push(data);
-    this.wsAllSend({...data, event: 'showMessage'});
+
+    this.wsAllSend(data);
   }
 
   // Удаление сообщения
-  eventDelete(id) {
-    const unlinkFiles = new Set();
-    [...this.allowedTypes, 'file', 'links'].forEach((type) => {
-      const filesInCategory = this.category[type].filter((item) => item.id === id).map((item) => item.name);
-      filesInCategory.forEach((fileName) => unlinkFiles.add(fileName));
-      this.category[type] = this.category[type].filter((item) => item.id !== id);
+  async eventDelete(id) {
+    const selectQuery = "SELECT file_path FROM messages WHERE id = ?";
+    const result = await client.execute(selectQuery, [id], { prepare: true });
+
+    let filePath = null;
+    if (result.rows.length && result.rows[0].file_path) {
+      filePath = result.rows[0].file_path;
+    }
+
+    await client.execute("DELETE FROM messages WHERE id = ?", [id], {
+      prepare: true,
     });
-    unlinkFiles.forEach((fileName) => {
-      fs.unlink(path.join(this.filesDir, fileName), () => {});
+    await client.execute("DELETE FROM favorites WHERE id = ?", [id], {
+      prepare: true,
     });
 
-    this.favorites.delete(id);
+    if (filePath) {
+      try {
+        await fs.unlink(filePath);
+        console.log(`Файл ${filePath} удалён`);
+      } catch (err) {
+        if (err.code !== "ENOENT") {
+          console.error("Ошибка при удалении файла:", err);
+        }
+      }
+    }
 
-    const messageIndex = this.dB.findIndex((item) => item.id === id);
-    this.dB.splice(messageIndex, 1);
-    this.wsAllSend({ id, event: 'deleteMessage' });
+    this.wsAllSend({ id, event: "deleteMessage" });
   }
 
   // Добавление в избранное
-  eventFavoriteAppend(id) {
-    this.favorites.add(id);
-    this.wsAllSend({ id, event: 'favoriteAppend'});
+  async eventFavoriteAppend(id) {
+    await client.execute("INSERT INTO favorites (id) VALUES (?)", [id], {
+      prepare: true,
+    });
+    this.wsAllSend({ id, event: "favoriteAppend" });
   }
 
   // Удаление из избранного
-  eventFavoriteDelete(id) {
-    this.favorites.delete(id);
-    this.wsAllSend({ id, event: 'favoriteDelete'});
+  async eventFavoriteDelete(id) {
+    await client.execute("DELETE FROM favorites WHERE id = ?", [id], {
+      prepare: true,
+    });
+    this.wsAllSend({ id, event: "favoriteDelete" });
   }
 
   // Закрепление сообщения
-  eventPin(id) {
-    const hasPinned = this.dB.find((message) => message.pinned);
-    if (hasPinned) {
-      delete hasPinned.pinned;
-    }
+  async eventPin(id) {
+    await client.execute(
+      "INSERT INTO pinned_message (singleton, id) VALUES (?, ?)",
+      ["pinned", id],
+      { prepare: true }
+    );
+    this.wsAllSend({ id, event: "appendPin" });
+  }
 
-    const pinnedMessage = this.dB.find((message) => message.id === id);
-    pinnedMessage.pinned = true;
-    this.wsAllSend({id, event: 'appendPin' });
+  // Закрепление сообщения
+  async getMesgByIds(ids) {
+    const cassRes = await client.execute(
+      "SELECT * FROM messages WHERE id IN ?",
+      [ids],
+      { prepare: true }
+    );
+    return cassRes;
   }
 
   // Отправка ответа сервера
@@ -131,44 +170,49 @@ module.exports = class Storage {
 
   // Рассылка ответов всем клиента сервера (для поддержки синхронизации)
   wsAllSend(data) {
-    for(const client of this.clients) {
+    for (const client of this.clients) {
       client.send(JSON.stringify(data));
     }
   }
 
   // Получение и обработка файлов
-  loadFile(file, infoMessg) {
-    return new Promise((resolve, reject) => {
-      const fileName = infoMessg.name;
-      const oldPath = file.path;
-      const newPath = path.join(this.filesDir, fileName);
+  async loadFile(file, infoMessg) {
+    const oldPath = file.filepath || file.path;
+    if (!file || !oldPath) {
+      return reject(new Error("Файл не найден в запросе"));
+    }
 
-      const callback = (error) => reject(error);
+    const fileName = file.originalFilename || file.name;
+    const newPath = path.join(this.filesDir, fileName);
 
-      const readStream = fs.createReadStream(oldPath);
-      const writeStream = fs.createWriteStream(newPath);
+    if (oldPath !== newPath) {
+      await fs.rename(oldPath, newPath);
+    }
 
-      readStream.on('error', callback);
-      writeStream.on('error', callback);
+    const data = {
+      id: uuid.v1(),
+      message: fileName,
+      date: infoMessg.date,
+      type: infoMessg.type,
+      geo: infoMessg.geo,
+      file_path: newPath,
+    };
 
-      readStream.on('close', () => {
-        fs.unlink(oldPath, callback);
+    const query = `
+      INSERT INTO messages (id, message, date, type, geo, file_path)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `;
+    const params = [
+      data.id,
+      data.message,
+      data.date,
+      data.type,
+      data.geo,
+      data.file_path,
+    ];
 
-        const data = {
-          id: uuid.v1(),
-          message: fileName,
-          date: infoMessg.date,
-          type: infoMessg.type,
-          geo: infoMessg.geo
-        };
-        this.dB.push(data);
+    await client.execute(query, params, { prepare: true });
 
-        this.category[infoMessg.type].push({ name: fileName, id: data.id });
-
-        resolve({ ...data});
-      });
-
-      readStream.pipe(writeStream);
-    });
+    return data;
   }
-}
+};
