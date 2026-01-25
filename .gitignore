@@ -81,3 +81,7 @@ typings/
 
 # DynamoDB Local files
 .dynamodb/
+
+files/*
+qdrant_storage/*
+opensearch_data/*
