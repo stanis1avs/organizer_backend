@@ -85,3 +85,5 @@ typings/
 files/*
 qdrant_storage/*
 opensearch_data/*
+cassandra_data/
+Desktop.ini
