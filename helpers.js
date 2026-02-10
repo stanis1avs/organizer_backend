@@ -46,29 +46,21 @@ function fakeEmbedding(size) {
 
 async function getQueryEmbedding(text, size = 384) {
   const url = "http://localhost:8000/embed";
-  if (url) {
-    // const resp = await axios.post(url, { text });
-    // return resp.data.embedding;
-
-    try {
-      const resp = await axios.post(url, { text, size }, { timeout: 10000 });
-      const emb = resp.data?.embedding;
-      if (!Array.isArray(emb)) throw new Error("Bad embedding response");
-      // validate length
-      if (emb.length !== size) {
-        console.warn("Embedding size mismatch", emb.length, "expected", size);
-      }
-      console.log("success");
-      return emb;
-    } catch (e) {
-      console.error("Embedding service error:", e.response?.data || e.message);
-      // fall back to random vector so search doesn't crash
-      return fakeEmbedding(size);
+  try {
+    const resp = await axios.post(url, { text, size }, { timeout: 10000 });
+    const emb = resp.data?.embedding;
+    if (!Array.isArray(emb)) throw new Error("Bad embedding response");
+    // validate length
+    if (emb.length !== size) {
+      console.warn("Embedding size mismatch", emb.length, "expected", size);
     }
+    console.log("Embedding generated successfully");
+    return emb;
+  } catch (e) {
+    console.error("Embedding service error:", e.response?.data || e.message);
+    // fall back to random vector so search doesn't crash
+    return fakeEmbedding(size);
   }
-
-  // Фолбэк:
-  return fakeEmbedding(size);
 }
 
 module.exports = {
