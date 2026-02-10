@@ -1,4 +1,3 @@
-// pseudocode/hybridSearch.js (упрощённый)
 const axios = require("axios");
 const { Client } = require("@opensearch-project/opensearch");
 const { getQueryEmbedding, fuseResults } = require("./helpers");
