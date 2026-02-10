@@ -29,3 +29,20 @@ services:
       - "9600:9600"
     volumes:
       - ./opensearch_data:/usr/share/opensearch/data
+
+  cassandra:
+    image: cassandra:latest
+    container_name: cassandradb
+    restart: unless-stopped
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    environment:
+      - CASSANDRA_CLUSTER_NAME=Test Cluster
+
+
+volumes:
+  cassandra-data:
+    external: true
+    name: 906de87ffa13bdb8780ffb9d371cfbc5970814d12b40ef05aac0c53a21b72248
