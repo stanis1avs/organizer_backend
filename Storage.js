@@ -176,14 +176,18 @@ module.exports = class Storage {
     this.wsAllSend({ id, event: "appendPin" });
   }
 
-  // Закрепление сообщения
   async getMesgByIds(ids) {
-    const cassRes = await client.execute(
-      "SELECT * FROM messages WHERE id IN ?",
-      [ids],
-      { prepare: true }
+    if (!ids || ids.length === 0) return { rows: [] };
+    const results = await Promise.all(
+      ids.map((id) =>
+        client.execute(
+          "SELECT * FROM messages WHERE id = ?",
+          [id],
+          { prepare: true }
+        )
+      )
     );
-    return cassRes;
+    return { rows: results.flatMap((r) => r.rows) };
   }
 
   // Сохранение эмбеддинга в Qdrant
