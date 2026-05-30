@@ -2,33 +2,59 @@ const axios = require("axios");
 const { Client } = require("@opensearch-project/opensearch");
 const { getQueryEmbedding, fuseResults } = require("./helpers");
 
-const qdrant = axios.create({ baseURL: "http://localhost:6333" });
-const os = new Client({ node: "http://localhost:9200" });
+const qdrant = axios.create({ baseURL: process.env.QDRANT_URL || "http://localhost:6333" });
+const os = new Client({ node: process.env.OPENSEARCH_URL || "http://localhost:9200" });
 
-async function searchHybrid(query, topK = 10, searchType = 'all') {
+const serviceHealth = {
+  qdrant: { ok: false, checkedAt: 0 },
+  embeddings: { ok: false, checkedAt: 0 },
+};
+const HEALTH_TTL_MS = 30_000;
+
+async function checkQdrantHealth() {
+  const now = Date.now();
+  if (now - serviceHealth.qdrant.checkedAt < HEALTH_TTL_MS) return serviceHealth.qdrant.ok;
   try {
-    // Check services availability
-    console.log('Checking services availability...');
-    
-    // Check Qdrant
+    await qdrant.get('/collections');
+    serviceHealth.qdrant = { ok: true, checkedAt: now };
+    return true;
+  } catch (e) {
+    serviceHealth.qdrant = { ok: false, checkedAt: now };
+    console.error('Qdrant health check failed:', e.message);
+    return false;
+  }
+}
+
+async function checkEmbeddingsHealth() {
+  const now = Date.now();
+  if (now - serviceHealth.embeddings.checkedAt < HEALTH_TTL_MS) return serviceHealth.embeddings.ok;
+  try {
+    await axios.get((process.env.EMBEDDING_SERVICE_URL || "http://localhost:8000") + "/health", { timeout: 3000 });
+    serviceHealth.embeddings = { ok: true, checkedAt: now };
+    return true;
+  } catch {
+    // Fallback: попробуем /docs (FastAPI всегда отдаёт /docs если жив)
     try {
-      await qdrant.get('/collections');
-      console.log('Qdrant is available');
+      await axios.get((process.env.EMBEDDING_SERVICE_URL || "http://localhost:8000") + "/docs", { timeout: 3000 });
+      serviceHealth.embeddings = { ok: true, checkedAt: now };
+      return true;
     } catch (e) {
-      console.error('Qdrant is not available:', e.message);
-      throw new Error('Qdrant service is not available');
+      serviceHealth.embeddings = { ok: false, checkedAt: now };
+      console.error('Embedding service health check failed:', e.message);
+      return false;
     }
-    
-    // Check embedding service
-    try {
-      await getQueryEmbedding('test', 384);
-      console.log('Embedding service is available');
-    } catch (e) {
-      console.error('Embedding service is not available:', e.message);
-      throw new Error('Embedding service is not available');
-    }
-    
-    console.log('All services are available, starting search...');
+  }
+}
+
+async function searchHybrid(query, topK = 10, searchType = 'all', alpha = 0.6) {
+  try {
+    const qdrantOk = await checkQdrantHealth();
+    const embeddingsOk = await checkEmbeddingsHealth();
+
+    if (!qdrantOk) throw new Error('Qdrant service is not available');
+    if (!embeddingsOk) throw new Error('Embedding service is not available');
+
+    console.log('All services available, starting search...');
     
     // 1) BM25 search
     const bmRes = await os.search({
@@ -42,7 +68,7 @@ async function searchHybrid(query, topK = 10, searchType = 'all') {
     });
 
     const bmMap = new Map();
-    bmRes.body.hits.hits.forEach((h, i) => {
+    bmRes.body.hits.hits.forEach((h) => {
       bmMap.set(h._id, { bmScore: h._score, doc: h._source });
     });
 
@@ -69,7 +95,7 @@ async function searchHybrid(query, topK = 10, searchType = 'all') {
           {
             vector: qVec,
             top: topK,
-            with_payload: false,
+            with_payload: true,
             with_vector: false,
           }
         );
@@ -151,19 +177,17 @@ async function searchHybrid(query, topK = 10, searchType = 'all') {
   const allIds = new Set([...bmMap.keys(), ...textVecMap.keys(), ...imgVecMap.keys()]);
   
   allIds.forEach(id => {
-    const bmScore = bmMap.get(id)?.bmScore || 0;
     const textScore = textVecMap.get(id)?.vecScore || 0;
     const imgScore = imgVecMap.get(id)?.vecScore || 0;
     const bestScore = Math.max(textScore, imgScore);
     const payload = textVecMap.get(id)?.payload || imgVecMap.get(id)?.payload || bmMap.get(id)?.doc;
-    
+
     if (bestScore > 0) {
       bestVecMap.set(id, { vecScore: bestScore, payload });
     }
   });
 
-  // Use fuseResults for final merging
-  const merged = fuseResults(bmMap, bestVecMap, 0.6);
+  const merged = fuseResults(bmMap, bestVecMap, alpha);
 
   return merged.slice(0, topK);
   } catch (error) {

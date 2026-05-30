@@ -31,8 +31,14 @@ module.exports = class Storage {
   }
 
   init() {
-    this.ws.on("message", async (message) => {
-      const command = JSON.parse(message);
+    this.ws.on("message", async (rawMessage) => {
+      let command;
+      try {
+        command = JSON.parse(rawMessage);
+      } catch (e) {
+        console.error("Invalid WS message (JSON parse error):", e.message);
+        return;
+      }
 
       //Запрос на данные из БД
       if (command.event === "load") {
@@ -215,21 +221,29 @@ module.exports = class Storage {
     this.ws.send(JSON.stringify(data));
   }
 
-  // Рассылка ответов всем клиента сервера (для поддержки синхронизации)
+  // Рассылка ответов всем клиентам сервера (для поддержки синхронизации)
   wsAllSend(data) {
+    const payload = JSON.stringify(data);
     for (const client of this.clients) {
-      client.send(JSON.stringify(data));
+      // Проверяем readyState: 1 === WebSocket.OPEN
+      if (client.readyState === 1) {
+        client.send(payload);
+      }
     }
   }
 
   // Получение и обработка файлов
   async loadFile(file, infoMessg) {
-    const oldPath = file.filepath || file.path;
+    const oldPath = file && (file.filepath || file.path);
     if (!file || !oldPath) {
-      return reject(new Error("Файл не найден в запросе"));
+      throw new Error("Файл не найден в запросе");
     }
 
-    const fileName = file.originalFilename || file.name;
+    const safeFileName = path.basename(file.originalFilename || file.name || `file_${Date.now()}`);
+    if (!safeFileName || safeFileName === '.' || safeFileName === '..') {
+      throw new Error("Недопустимое имя файла");
+    }
+    const fileName = safeFileName;
     const newPath = path.join(this.filesDir, fileName);
 
     if (oldPath !== newPath) {

@@ -21,7 +21,8 @@ app.use(
       uploadDir: filesDir,
       keepExtensions: true,
       filename: (name, ext, part, form) => {
-        return part.originalFilename || part.name || `${Date.now()}${ext}`;
+        const safe = path.basename(part.originalFilename || part.name || `${Date.now()}${ext}`);
+        return safe;
       },
     },
   })
@@ -29,15 +30,27 @@ app.use(
 
 app.use(koaStatic(filesDir));
 
-// CORS
 app.use(
   cors({
-    origin: "*",
+    origin: (ctx) => {
+      const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:8080,http://127.0.0.1:8080").split(",");
+      const requestOrigin = ctx.request.headers.origin;
+      if (!requestOrigin) return allowedOrigins[0];
+      return allowedOrigins.includes(requestOrigin) ? requestOrigin : allowedOrigins[0];
+    },
     credentials: true,
-    "Access-Control-Allow-Origin": true,
     allowMethods: ["GET", "POST", "PUT", "DELETE"],
   })
 );
+
+app.on("error", (err, ctx) => {
+  console.error("Koa app error:", err.message, ctx?.path);
+});
+
+// Глобальный обработчик необработанных отклонений промисов
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection:", reason);
+});
 
 app.use(router.routes()).use(router.allowedMethods());
 
@@ -48,85 +61,94 @@ const wsServer = new WS.Server({ server });
 //=======================================
 
 const clients = [];
-wsServer.on("connection", (ws) => {
-  clients.push(ws);
-  const storage = new Storage(ws, clients, filesDir);
-  storage.init();
 
-  router.post("/upload", async (ctx) => {
+const sharedStorage = new Storage(null, clients, filesDir);
+
+router.post("/upload", async (ctx) => {
+  try {
     const file = ctx.request.files?.file || ctx.request.files?.body;
-    await storage.loadFile(file, ctx.request.body).then((result) => {
-      storage.wsAllSend({ ...result, event: "showFile" });
-    });
+    if (!file) {
+      ctx.status = 400;
+      ctx.body = { error: "No file provided" };
+      return;
+    }
+    const result = await sharedStorage.loadFile(file, ctx.request.body);
+    sharedStorage.wsAllSend({ ...result, event: "showFile" });
     ctx.response.status = 204;
-  });
+  } catch (err) {
+    console.error("Upload error:", err.message);
+    ctx.status = 500;
+    ctx.body = { error: "Upload failed", details: err.message };
+  }
+});
 
-  router.post("/search", async (ctx) => {
-    try {
-      const {
-        query,
-        topK = 10,
-        alpha = 0.6,
-        vector_size = 384,
-        searchType = 'all' // 'all', 'text', 'image'
-      } = ctx.request.body || {};
-      if (!query || typeof query !== "string" || !query.trim()) {
-        ctx.status = 400;
-        ctx.body = { error: "Query text is required" };
-        return;
-      }
+router.post("/search", async (ctx) => {
+  try {
+    const {
+      query,
+      topK = 10,
+      alpha = 0.6,
+      searchType = "all", // 'all', 'text', 'image'
+    } = ctx.request.body || {};
 
-      // Use hybrid search function
-      const searchResults = await searchHybrid(query, topK, searchType);
-      
-      // Get message IDs from search results
-      const messageIds = searchResults.map(result => result.id);
-      
-      // Fetch full messages from Cassandra
-      let rowsMap = new Map();
-      if (messageIds.length > 0) {
-        try {
-          const cassandraResult = await storage.getMesgByIds(messageIds);
-          cassandraResult.rows.forEach(row => {
-            rowsMap.set(row.id.toString(), row);
-          });
-        } catch (err) {
-          console.error("Cassandra query failed:", err.message);
-          // Fallback to individual queries
-          for (const id of messageIds) {
-            try {
-              const r = await storage.getMesgByIds([id]);
-              if (r.rows.length) rowsMap.set(id, r.rows[0]);
-            } catch (e) {
-              console.error("Failed to fetch message:", id, e.message);
-            }
+    if (!query || typeof query !== "string" || !query.trim()) {
+      ctx.status = 400;
+      ctx.body = { error: "Query text is required" };
+      return;
+    }
+
+    const searchResults = await searchHybrid(query, topK, searchType, Number(alpha) || 0.6);
+
+    const messageIds = searchResults.map((result) => result.id);
+
+    let rowsMap = new Map();
+    if (messageIds.length > 0) {
+      try {
+        const cassandraResult = await sharedStorage.getMesgByIds(messageIds);
+        cassandraResult.rows.forEach((row) => {
+          rowsMap.set(row.id.toString(), row);
+        });
+      } catch (err) {
+        console.error("Cassandra query failed:", err.message);
+        for (const id of messageIds) {
+          try {
+            const r = await sharedStorage.getMesgByIds([id]);
+            if (r.rows.length) rowsMap.set(id.toString(), r.rows[0]);
+          } catch (e) {
+            console.error("Failed to fetch message:", id, e.message);
           }
         }
       }
-
-      // Combine search results with Cassandra data
-      const results = searchResults.map(item => {
-        const cassRow = rowsMap.get(item.id);
-        return {
-          id: item.id,
-          combinedScore: item.combined,
-          bmScore: item.bmScore,
-          vecScore: item.vecScore,
-          message: cassRow?.message || item.payload?.text || '',
-          date: cassRow?.date || item.payload?.date,
-          type: cassRow?.type || item.payload?.type || 'unknown',
-          geo: cassRow?.geo || null,
-          file_path: cassRow?.file_path || null
-        };
-      });
-
-      ctx.body = { results };
-    } catch (error) {
-      console.error("Search error:", error);
-      ctx.status = 500;
-      ctx.body = { error: "Search failed", details: error.message };
     }
-  });
+
+    const results = searchResults.map((item) => {
+      const cassRow = rowsMap.get(item.id.toString());
+      return {
+        id: item.id,
+        combinedScore: item.combined,
+        bmScore: item.bmScore,
+        vecScore: item.vecScore,
+        message: cassRow?.message || item.payload?.text || "",
+        date: cassRow?.date || item.payload?.date,
+        type: cassRow?.type || item.payload?.type || "unknown",
+        geo: cassRow?.geo || null,
+        file_path: cassRow?.file_path || null,
+      };
+    });
+
+    ctx.body = { results };
+  } catch (error) {
+    console.error("Search error:", error);
+    ctx.status = 500;
+    ctx.body = { error: "Search failed", details: error.message };
+  }
+});
+
+wsServer.on("connection", (ws) => {
+  clients.push(ws);
+  // Каждое WS-соединение получает свой Storage для wsSend (ответ только этому клиенту)
+  const storage = new Storage(ws, clients, filesDir);
+  storage.init();
 
   ws.on("close", () => {
     const wsIndex = clients.indexOf(ws);
@@ -136,7 +158,7 @@ wsServer.on("connection", (ws) => {
   });
 });
 
-server.listen(port, () => console.log("Server started"));
+server.listen(port, () => console.log(`Server started on port ${port}`));
 
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {

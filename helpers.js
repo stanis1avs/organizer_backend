@@ -1,10 +1,16 @@
 const axios = require("axios");
 
-// --- helper: нормализация массива чисел ---
+const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || "http://localhost:8000";
+
+
 function normalizeArray(arr) {
   if (!arr || arr.length === 0) return [];
-  const min = Math.min(...arr);
-  const max = Math.max(...arr);
+  let min = arr[0];
+  let max = arr[0];
+  for (const v of arr) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
   if (max === min) return arr.map(() => 1);
   return arr.map((v) => (v - min) / (max - min));
 }
@@ -22,45 +28,31 @@ function fuseResults(bmHitsMap, vecHitsMap, alpha = 0.6) {
   const bmNorm = normalizeArray(bmScores);
   const vecNorm = normalizeArray(vecScores);
 
-  const merged = ids
-    .map((id, i) => {
-      return {
-        id,
-        bmScore: bmScores[i],
-        vecScore: vecScores[i],
-        bmNorm: bmNorm[i],
-        vecNorm: vecNorm[i],
-        combined: alpha * vecNorm[i] + (1 - alpha) * bmNorm[i],
-        doc: bmHitsMap.get(id)?.doc ?? null,
-        payload: vecHitsMap.get(id)?.payload ?? null,
-      };
-    })
+  return ids
+    .map((id, i) => ({
+      id,
+      bmScore: bmScores[i],
+      vecScore: vecScores[i],
+      bmNorm: bmNorm[i],
+      vecNorm: vecNorm[i],
+      combined: alpha * vecNorm[i] + (1 - alpha) * bmNorm[i],
+      doc: bmHitsMap.get(id)?.doc ?? null,
+      payload: vecHitsMap.get(id)?.payload ?? null,
+    }))
     .sort((a, b) => b.combined - a.combined);
-
-  return merged;
-}
-
-function fakeEmbedding(size) {
-  return Array.from({ length: size }, () => Math.random() * 2 - 1);
 }
 
 async function getQueryEmbedding(text, size = 384) {
-  const url = "http://localhost:8000/embed";
-  try {
-    const resp = await axios.post(url, { text, size }, { timeout: 10000 });
-    const emb = resp.data?.embedding;
-    if (!Array.isArray(emb)) throw new Error("Bad embedding response");
-    // validate length
-    if (emb.length !== size) {
-      console.warn("Embedding size mismatch", emb.length, "expected", size);
-    }
-    console.log("Embedding generated successfully");
-    return emb;
-  } catch (e) {
-    console.error("Embedding service error:", e.response?.data || e.message);
-    // fall back to random vector so search doesn't crash
-    return fakeEmbedding(size);
+  const url = `${EMBEDDING_SERVICE_URL}/embed`;
+  const resp = await axios.post(url, { text, size }, { timeout: 10000 });
+  const emb = resp.data?.embedding;
+  if (!Array.isArray(emb) || emb.length === 0) {
+    throw new Error(`Bad embedding response from service (size=${size})`);
   }
+  if (emb.length !== size) {
+    console.warn(`[getQueryEmbedding] Size mismatch: got ${emb.length}, expected ${size}`);
+  }
+  return emb;
 }
 
 module.exports = {
