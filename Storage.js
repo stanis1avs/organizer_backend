@@ -6,6 +6,7 @@ const axios = require("axios");
 const { getQueryEmbedding } = require("./helpers");
 const { indexMessage, extractTextFromImage } = require("./indexMessage");
 const { Client } = require("@opensearch-project/opensearch");
+const ocrService = require("./ocrService");
 
 const client = new cassandra.Client({
   contactPoints: ["127.0.0.1"],
@@ -304,9 +305,7 @@ module.exports = class Storage {
         
         // Извлекаем текст из изображения с помощью OCR
         try {
-          const ocrService = require('./ocrService');
           const extractedText = await ocrService.extractTextFromImage(imagePath);
-          console.log("extractedText", extractedText)
           if (extractedText) {
             text = extractedText;
             console.log(`OCR extracted ${extractedText.length} characters from image ${messageId}`);
