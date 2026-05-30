@@ -14,10 +14,11 @@ const client = new cassandra.Client({
 });
 
 module.exports = class Storage {
-  constructor(ws, clients, filesDir) {
+  constructor(ws, clients, filesDir, fileToken = null) {
     this.ws = ws;
     this.clients = clients;
     this.filesDir = filesDir;
+    this.fileToken = fileToken;
     
     // Qdrant клиент
     this.qdrant = axios.create({
@@ -88,6 +89,7 @@ module.exports = class Storage {
       favorites: favorites.rows.map((row) => row.id.toString()),
       pinned: pinned.rowLength > 0 ? pinned.rows[0].id.toString() : null,
       position: 0,
+      token: this.fileToken,
     };
     this.wsSend(data);
   }
@@ -255,7 +257,7 @@ module.exports = class Storage {
     }
 
     const data = {
-      id: uuid.v1(),
+      id: uuid.v4(),
       message: fileName,
       date: infoMessg.date,
       type: infoMessg.type,

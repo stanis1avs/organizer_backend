@@ -6,6 +6,7 @@ const ocrService = require('./ocrService');
 const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
 const OPENSEARCH_URL = process.env.OPENSEARCH_URL || "http://localhost:9200";
 const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || "http://localhost:8000";
+const EMBEDDING_API_KEY = process.env.EMBEDDING_API_KEY || "";
 
 const qdrant = axios.create({ baseURL: QDRANT_URL });
 const osClient = new Client({ node: OPENSEARCH_URL });
@@ -104,10 +105,11 @@ async function indexMessage({
         console.log(`[indexMessage] OCR returned empty text for ${message_id}, skipping text vector`);
       }
 
+      const embHeaders = EMBEDDING_API_KEY ? { "X-API-Key": EMBEDDING_API_KEY } : {};
       const imageVectorResponse = await axios.post(
         `${EMBEDDING_SERVICE_URL}/embed-image`,
         { image_path: imagePath, size: 512 },
-        { timeout: 30000 }
+        { timeout: 30000, headers: embHeaders }
       );
 
       const imageVector = imageVectorResponse.data?.embedding;

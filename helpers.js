@@ -1,6 +1,7 @@
 const axios = require("axios");
 
 const EMBEDDING_SERVICE_URL = process.env.EMBEDDING_SERVICE_URL || "http://localhost:8000";
+const EMBEDDING_API_KEY = process.env.EMBEDDING_API_KEY || "";
 
 
 function normalizeArray(arr) {
@@ -44,7 +45,8 @@ function fuseResults(bmHitsMap, vecHitsMap, alpha = 0.6) {
 
 async function getQueryEmbedding(text, size = 384) {
   const url = `${EMBEDDING_SERVICE_URL}/embed`;
-  const resp = await axios.post(url, { text, size }, { timeout: 10000 });
+  const headers = EMBEDDING_API_KEY ? { "X-API-Key": EMBEDDING_API_KEY } : {};
+  const resp = await axios.post(url, { text, size }, { timeout: 10000, headers });
   const emb = resp.data?.embedding;
   if (!Array.isArray(emb) || emb.length === 0) {
     throw new Error(`Bad embedding response from service (size=${size})`);

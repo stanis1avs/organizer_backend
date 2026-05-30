@@ -1,4 +1,6 @@
+require("dotenv").config();
 const http = require("http");
+const crypto = require("crypto");
 const WS = require("ws");
 const Koa = require("koa");
 const koaBody = require("koa-body");
@@ -8,6 +10,10 @@ const cors = require("koa2-cors");
 const path = require("path");
 const Storage = require("./Storage");
 const { searchHybrid } = require("./hybridSearch");
+
+// S-08: токен доступа к статическим файлам.
+// Задаётся через FILES_TOKEN env; если не задан — генерируется случайно при старте.
+const FILES_TOKEN = process.env.FILES_TOKEN || crypto.randomBytes(32).toString("hex");
 
 const app = new Koa();
 const router = new Router();
@@ -20,7 +26,7 @@ app.use(
     formidable: {
       uploadDir: filesDir,
       keepExtensions: true,
-      filename: (name, ext, part, form) => {
+      filename: (_name, ext, part) => {
         const safe = path.basename(part.originalFilename || part.name || `${Date.now()}${ext}`);
         return safe;
       },
@@ -28,6 +34,18 @@ app.use(
   })
 );
 
+// S-08: защита статических файлов токеном.
+// API-маршруты (/upload, /search) пропускаются без проверки.
+// Если FILES_TOKEN не задан в env — механизм отключён (не должно быть в prod).
+app.use(async (ctx, next) => {
+  const isApiRoute = ctx.path === "/upload" || ctx.path === "/search";
+  if (!isApiRoute && ctx.query.token !== FILES_TOKEN) {
+    ctx.status = 401;
+    ctx.body = { error: "Unauthorized" };
+    return;
+  }
+  return next();
+});
 app.use(koaStatic(filesDir));
 
 app.use(
@@ -62,7 +80,7 @@ const wsServer = new WS.Server({ server });
 
 const clients = [];
 
-const sharedStorage = new Storage(null, clients, filesDir);
+const sharedStorage = new Storage(null, clients, filesDir, FILES_TOKEN);
 
 router.post("/upload", async (ctx) => {
   try {
@@ -147,7 +165,7 @@ router.post("/search", async (ctx) => {
 wsServer.on("connection", (ws) => {
   clients.push(ws);
   // Каждое WS-соединение получает свой Storage для wsSend (ответ только этому клиенту)
-  const storage = new Storage(ws, clients, filesDir);
+  const storage = new Storage(ws, clients, filesDir, FILES_TOKEN);
   storage.init();
 
   ws.on("close", () => {
