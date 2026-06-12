@@ -12,7 +12,7 @@ function normalizeArray(arr) {
     if (v < min) min = v;
     if (v > max) max = v;
   }
-  if (max === min) return arr.map(() => 1);
+  if (max === min) return arr.map(() => (max === 0 ? 0 : 1));
   return arr.map((v) => (v - min) / (max - min));
 }
 
@@ -20,6 +20,8 @@ function normalizeArray(arr) {
 function fuseResults(bmHitsMap, vecHitsMap, alpha = 0.6) {
   // bmHitsMap: Map id -> { bmScore, doc }
   // vecHitsMap: Map id -> { vecScore, payload }
+  // vecScore — cosine similarity, already in [0,1], no normalization needed.
+  // bmScore — TF-IDF (arbitrary scale), normalize to [0,1] across results.
   const allIds = new Set([...bmHitsMap.keys(), ...vecHitsMap.keys()]);
   const ids = Array.from(allIds);
 
@@ -27,16 +29,18 @@ function fuseResults(bmHitsMap, vecHitsMap, alpha = 0.6) {
   const vecScores = ids.map((id) => vecHitsMap.get(id)?.vecScore ?? 0);
 
   const bmNorm = normalizeArray(bmScores);
-  const vecNorm = normalizeArray(vecScores);
+  const hasBM25 = bmScores.some((s) => s > 0);
 
   return ids
     .map((id, i) => ({
       id,
       bmScore: bmScores[i],
       vecScore: vecScores[i],
-      bmNorm: bmNorm[i],
-      vecNorm: vecNorm[i],
-      combined: alpha * vecNorm[i] + (1 - alpha) * bmNorm[i],
+      // When BM25 has no results vecScore is already in [0,1] — use it directly.
+      // When BM25 has results blend both sources with alpha weight.
+      combined: hasBM25
+        ? alpha * vecScores[i] + (1 - alpha) * bmNorm[i]
+        : vecScores[i],
       doc: bmHitsMap.get(id)?.doc ?? null,
       payload: vecHitsMap.get(id)?.payload ?? null,
     }))

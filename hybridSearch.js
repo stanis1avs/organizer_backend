@@ -46,7 +46,7 @@ async function checkEmbeddingsHealth() {
   }
 }
 
-async function searchHybrid(query, topK = 10, searchType = 'all', alpha = 0.6) {
+async function searchHybrid(query, topK = 10, searchType = 'all', alpha = 0.6, minScore = 0) {
   try {
     const qdrantOk = await checkQdrantHealth();
     const embeddingsOk = await checkEmbeddingsHealth();
@@ -116,47 +116,9 @@ async function searchHybrid(query, topK = 10, searchType = 'all', alpha = 0.6) {
     }
   }
   
-  if (searchType === 'all' || searchType === 'image') {
-    // Image vector search - need 512D vector for image search
-    try {
-      // Get 512D vector for image search
-      console.log('Getting 512D vector for image search...');
-      const imgVec = await getQueryEmbedding(query, 512);
-      console.log(`Image vector size: ${imgVec.length}`);
-      
-      // Validate vector before sending
-      if (!imgVec || imgVec.length === 0) {
-        console.warn('Empty image vector, skipping image search');
-      } else {
-        console.log(`Performing image vector search...`);
-        const imgRes = await qdrant.post(
-          "/collections/images_vectors/points/search",
-          {
-            vector: imgVec, // Use 512D vector for image collection
-            top: topK,
-            with_payload: true,
-            with_vector: false,
-            search_params: {
-              exact: false  // Use approximate search for better performance
-            }
-          }
-        );
-        
-        console.log(`Image search returned ${imgRes.data.result?.length || 0} results`);
-        imgRes.data.result.forEach((p) => {
-          const id = p.id;
-          const existing = results.get(id) || { id, payload: p.payload };
-          existing.imgVecScore = p.score;
-          results.set(id, existing);
-        });
-      }
-    } catch (e) {
-      console.error('Image search failed:', e.response?.data || e.message);
-      if (e.response?.data?.status?.error?.includes('OutputTooSmall')) {
-        console.warn('Image collection appears to be empty. This is normal if no images have been indexed yet.');
-      }
-    }
-  }
+  // Image vector search runs only when an explicit image embedding is provided.
+  // Text queries cannot search image vectors (different embedding spaces — ResNet-50 2048D vs text 384D).
+  // searchType === 'image' is reserved for future cross-modal (CLIP-style) queries.
 
   // 4) Merge BM25 results with vector results using fuseResults
   const textVecMap = new Map();
@@ -189,7 +151,7 @@ async function searchHybrid(query, topK = 10, searchType = 'all', alpha = 0.6) {
 
   const merged = fuseResults(bmMap, bestVecMap, alpha);
 
-  return merged.slice(0, topK);
+  return merged.filter((item) => item.combined >= minScore).slice(0, topK);
   } catch (error) {
     console.error('Search failed:', error);
     throw error;

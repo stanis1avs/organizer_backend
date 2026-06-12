@@ -115,7 +115,8 @@ router.post("/search", async (ctx) => {
       return;
     }
 
-    const searchResults = await searchHybrid(query, topK, searchType, Number(alpha) || 0.6);
+    const effectiveAlpha = Number(alpha) || 0.6;
+    const searchResults = await searchHybrid(query, topK, searchType, effectiveAlpha, effectiveAlpha);
 
     const messageIds = searchResults.map((result) => result.id);
 
