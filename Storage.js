@@ -84,9 +84,18 @@ module.exports = class Storage {
       { prepare: true }
     );
 
+    const parseDate = (s) => {
+      if (!s) return 0;
+      const [datePart, timePart = ''] = String(s).split(', ');
+      const [d, m, y] = datePart.split('.');
+      const [h = 0, min = 0] = timePart.split(':');
+      return new Date(+y, +m - 1, +d, +h, +min).getTime();
+    };
+    const sortedRows = result.rows.slice().sort((a, b) => parseDate(a.date) - parseDate(b.date));
+
     const data = {
       event: "load",
-      dB: result.rows,
+      dB: sortedRows,
       favorites: favorites.rows.map((row) => row.id.toString()),
       pinned: pinned.rowLength > 0 ? pinned.rows[0].id.toString() : null,
       position: 0,
