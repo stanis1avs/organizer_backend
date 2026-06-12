@@ -132,6 +132,7 @@ module.exports = class Storage {
       filePath = result.rows[0].file_path;
     }
 
+    // Cassandra
     await client.execute("DELETE FROM messages WHERE id = ?", [id], {
       prepare: true,
     });
@@ -139,6 +140,7 @@ module.exports = class Storage {
       prepare: true,
     });
 
+    // Файл на диске
     if (filePath) {
       try {
         await fs.unlink(filePath);
@@ -149,6 +151,30 @@ module.exports = class Storage {
         }
       }
     }
+
+    // Qdrant — оба индекса (текст + изображения)
+    const qdrantBody = JSON.stringify({ points: [id] });
+    await Promise.all([
+      this.qdrant
+        .post("/collections/messages_text_vectors/points/delete", qdrantBody, {
+          headers: { "Content-Type": "application/json" },
+        })
+        .catch((e) => console.warn("[Qdrant] delete messages_text_vectors:", e.response?.data ?? e.message)),
+      this.qdrant
+        .post("/collections/images_vectors/points/delete", qdrantBody, {
+          headers: { "Content-Type": "application/json" },
+        })
+        .catch((e) => console.warn("[Qdrant] delete images_vectors:", e.response?.data ?? e.message)),
+    ]);
+
+    // OpenSearch
+    await this.osClient
+      .delete({ index: "messages_bm25", id: String(id) })
+      .catch((e) => {
+        if (e?.meta?.statusCode !== 404) {
+          console.warn("[OpenSearch] delete:", e.message);
+        }
+      });
 
     this.wsAllSend({ id, event: "deleteMessage" });
   }
