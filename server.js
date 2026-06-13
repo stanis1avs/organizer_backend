@@ -9,7 +9,7 @@ const Router = require("koa-router");
 const cors = require("koa2-cors");
 const path = require("path");
 const Storage = require("./Storage");
-const { searchHybrid } = require("./hybridSearch");
+const { searchHybrid, searchHybridByImage } = require("./hybridSearch");
 
 // S-08: токен доступа к статическим файлам.
 // Задаётся через FILES_TOKEN env; если не задан — генерируется случайно при старте.
@@ -51,7 +51,7 @@ app.use(koaStatic(filesDir));
 app.use(
   cors({
     origin: (ctx) => {
-      const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:8080,http://127.0.0.1:8080").split(",");
+      const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:8080,http://127.0.0.1:8080,http://127.0.0.1:3001,http://localhost:3001").split(",");
       const requestOrigin = ctx.request.headers.origin;
       if (!requestOrigin) return allowedOrigins[0];
       return allowedOrigins.includes(requestOrigin) ? requestOrigin : allowedOrigins[0];
@@ -104,19 +104,22 @@ router.post("/search", async (ctx) => {
   try {
     const {
       query,
+      imageData,
       topK = 10,
       alpha = 0.6,
-      searchType = "all", // 'all', 'text', 'image'
+      searchType = "all",
     } = ctx.request.body || {};
 
-    if (!query || typeof query !== "string" || !query.trim()) {
+    if (!imageData && (!query || typeof query !== "string" || !query.trim())) {
       ctx.status = 400;
       ctx.body = { error: "Query text is required" };
       return;
     }
 
     const effectiveAlpha = Number(alpha) || 0.6;
-    const searchResults = await searchHybrid(query, topK, searchType, effectiveAlpha, effectiveAlpha);
+    const searchResults = imageData
+      ? await searchHybridByImage(imageData, topK, effectiveAlpha)
+      : await searchHybrid(query, topK, searchType, effectiveAlpha, effectiveAlpha);
 
     const messageIds = searchResults.map((result) => result.id);
 

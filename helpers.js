@@ -61,8 +61,20 @@ async function getQueryEmbedding(text, size = 384) {
   return emb;
 }
 
+async function getClipEmbedding(text) {
+  const url = `${EMBEDDING_SERVICE_URL}/embed-clip`;
+  const headers = EMBEDDING_API_KEY ? { "X-API-Key": EMBEDDING_API_KEY } : {};
+  const resp = await axios.post(url, { text }, { timeout: 10000, headers });
+  const emb = resp.data?.embedding;
+  if (!Array.isArray(emb) || emb.length === 0) {
+    throw new Error(`Bad CLIP embedding response from service`);
+  }
+  return emb;
+}
+
 module.exports = {
   normalizeArray,
   fuseResults,
   getQueryEmbedding,
+  getClipEmbedding,
 };

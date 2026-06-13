@@ -28,7 +28,7 @@ class OCRService {
       try {
         const { stderr } = await execFilePromise(
           this.tesseractCmd,
-          [imagePath, tempBase, '-l', 'rus+eng', '--psm', '3']
+          [imagePath, tempBase, '-l', 'eng', '--psm', '3']
         );
 
         if (stderr && /error/i.test(stderr)) {

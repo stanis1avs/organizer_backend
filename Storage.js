@@ -161,7 +161,7 @@ module.exports = class Storage {
       }
     }
 
-    // Qdrant — оба индекса (текст + изображения)
+    // Qdrant — все коллекции
     const qdrantBody = JSON.stringify({ points: [id] });
     await Promise.all([
       this.qdrant
@@ -170,10 +170,20 @@ module.exports = class Storage {
         })
         .catch((e) => console.warn("[Qdrant] delete messages_text_vectors:", e.response?.data ?? e.message)),
       this.qdrant
+        .post("/collections/messages_clip_vectors/points/delete", qdrantBody, {
+          headers: { "Content-Type": "application/json" },
+        })
+        .catch((e) => console.warn("[Qdrant] delete messages_clip_vectors:", e.response?.data ?? e.message)),
+      this.qdrant
         .post("/collections/images_vectors/points/delete", qdrantBody, {
           headers: { "Content-Type": "application/json" },
         })
         .catch((e) => console.warn("[Qdrant] delete images_vectors:", e.response?.data ?? e.message)),
+      this.qdrant
+        .post("/collections/images_clip_vectors/points/delete", qdrantBody, {
+          headers: { "Content-Type": "application/json" },
+        })
+        .catch((e) => console.warn("[Qdrant] delete images_clip_vectors:", e.response?.data ?? e.message)),
     ]);
 
     // OpenSearch
